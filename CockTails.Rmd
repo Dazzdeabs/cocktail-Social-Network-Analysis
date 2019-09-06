@@ -1,11 +1,13 @@
 ---
 title: "R Notebook"
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 ---
 
 ```{r Package Installation}
 pacman::p_load (dplyr,tidyverse, readr,tidyr, igraph, graphlayouts, ggraph, devtools, tm, tidygraph, devtools)
-install_github('cbail/textnets')
+#install_github('cbail/textnets')
 ```
 
 ```{r Data Install}
@@ -20,14 +22,14 @@ data$bartender
 ```
 
 ```{r}
-lev_bartender<- levels(data$bartender)
-lev_bartender
-data$lev_bartender <- levels(data$bartender)
-
+#lev_bartender<- levels(data$bartender)
+#lev_bartender
+#data$lev_bartender <- levels(data$bartender)
+data2 <- data
 duplicated(data2$cocktail_name)
 data2$bartender[!duplicated(data2$bartender)]
 
-data2 <- data
+
 head(data)
 ```
 ```{r}
@@ -70,7 +72,7 @@ cock_data <- data2 %>%
   subset(!duplicated(cocktail_name)) %>%
   summary()
 
-cock_data
+cock_data <- as.data.frame(cock_data)
 
 ```
 
@@ -128,10 +130,10 @@ NULL
 ```
 
 ```{r}
-graph <- graph_from_data_frame(data_edges, directed = F, vertices = data_nodes)
-is.igraph(graph)
+#graph <- graph_from_data_frame(data_edges_nodes, directed = F, vertices = data_nodes)
+#is.igraph(graph)
 
-plot(graph)
+#plot(graph)
 ```
 
 Which cocktails are made by only one bartender? (degree centrality/betweenness centrality) 
@@ -142,60 +144,60 @@ Which cocktails are made by only one bartender? (degree centrality/betweenness c
 ##Which ingredients are the most popular to use? (degree centrality/betweenness centrality) Darren
 
 ```{r}
-install_github('cbail/textnets')
-library(textnets)
+#install_github('cbail/textnets')
+#library(textnets)
 ```
 
 ```{r}
-data_ing <- data %>%
-  select(ingredients)
-head(data_ing)
+#data_ing <- data %>%
+#  select(ingredients)
+#head(data_ing)
 # data_ing <- data_ing[1:50,]
 
-data_ing %>%
-  mutate_if(is.factor, as.character) -> data_ing
+#data_ing %>%
+#  mutate_if(is.factor, as.character) -> data_ing
 ```
 ```{r}
-corpus <- Corpus(VectorSource(data_ing))
-tdm <- DocumentTermMatrix(corpus)
+#corpus <- Corpus(VectorSource(data_ing))
+#tdm <- DocumentTermMatrix(corpus)
 
 # Plotting the incidence graph data
-plot(doc_graph_inc, edge.color = "gray30", edge.width = E(doc_graph_inc)$weight)
+#plot(doc_graph_inc, edge.color = "gray30", edge.width = E(doc_graph_inc)$weight)
 ```
 
 
 ```{r}
-ingredients %>%
-  filter(cocktail_name == "martinez")
+#ingredients %>%
+#  filter(cocktail_name == "martinez")
 ```
 ```{r}
-ingredients %>%
-  filter(cocktail_name == "neighborhood negroni")
-```
-
-
-
-```{r}
-tbl_graph <- as_tbl_graph(ingredients)
-tbl_graph
-plot(tbl_graph)
+#ingredients %>%
+#  filter(cocktail_name == "neighborhood negroni")
 ```
 
 
+
 ```{r}
-prepped_data <- PrepText(ingredients, groupvar = "cocktail_name", textvar = "ingredients", node_type = "groups", tokenizer = "words", pos = "nouns", remove_stop_words = TRUE, compound_nouns = TRUE)
+#tbl_graph <- as_tbl_graph(ingredients)
+#tbl_graph
+#plot(tbl_graph)
+```
+
+
+```{r}
+#prepped_data <- PrepText(ingredients, groupvar = "cocktail_name", textvar = "ingredients", node_type = "groups", tokenizer = "words", pos = "nouns", remove_stop_words = TRUE, compound_nouns = TRUE)
 ```
 
 ```{r}
-text_network <- CreateTextnet(prepped_data)
+#text_network <- CreateTextnet(prepped_data)
 ```
 
 ```{r}
-VisTextNet(text_network, label_degree_cut = 0, betweenness = TRUE)
+#VisTextNet(text_network, label_degree_cut = 0, betweenness = TRUE)
 ```
 
 ```{r}
-VisTextNetD3(text_network, zoom = TRUE)
+#VisTextNetD3(text_network, zoom = TRUE)
 ```
 
 
