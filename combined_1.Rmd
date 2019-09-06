@@ -1,5 +1,6 @@
 ---
 title: "Analysis of cocktail data"
+author: "Darren de Abreu, Alex Powell, Alexander Cawood, Khahliso Ledingwane, Qhama Sinandile"
 output:
   html_document:
     df_print: paged
