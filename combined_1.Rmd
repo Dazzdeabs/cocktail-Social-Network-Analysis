@@ -1,0 +1,1305 @@
+---
+title: "Analysis of cocktail data"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Introduction
+
+In this tutorial we will be going through and analysing a cocktail dataset made by the Hotaling & Co company. The dataset consists of the names of:
+
+  * each cocktail name
+  * the bartender that created the cocktail
+  * the primary ingredients (and their quantities)
+  * the specific garnish that is said to go with each cocktail
+  * the glassware type that the cocktail should be served in
+  * how the cocktail is prepared
+  * the bar at which the bartender
+  * the location of this bar
+  * a (largely empty) notes column
+
+
+Before we get started we need to install the relevant packages and read in the data we will be using.
+
+```{r message=FALSE, warning=FALSE}
+pacman::p_load('tidyverse', 'dplyr', 'stringr', 'tidyr','BiocManager','wordcloud','rlang','Rcpp','data.table','proxy')
+pacman::p_load (dplyr,tidyverse, readr,tidyr, igraph, graphlayouts, ggraph, devtools, tm, tidygraph, devtools,tidytext,textcat,sna, cssTools,tidytext, udpipe,purrr,DataExplorer,ggrepel,gridExtra)
+
+cocktail_raw_data <- read.csv('hotaling_cocktails - Cocktails.csv', header=T, na=c('N/A', 'n/a'))
+```
+
+# Prepping the data
+
+Now that we have the data we will be working with, we take a look at what it consists of.
+
+```{r}
+# view the first 6 rows of the data
+head(cocktail_raw_data)
+# view the last 6 rows of the data
+tail(cocktail_raw_data)
+```
+
+In order to get the data into a format that is easier to work with and extract information from, we do some light cleaning. Then we export it so that the next person wanting to make use of this cocktail dataset doesn't have to repeat the intial cleaning we did.
+
+```{r}
+# Renaming column
+cocktail_data <- cocktail_raw_data %>% 
+  rename(
+    cocktail_name = Cocktail.Name,
+    bar_company = Bar.Company
+    )
+
+# Converting entire dataset to lowercase
+cocktail_data <- data.frame(lapply(cocktail_data, function(cocktail_data) {return(tolower(cocktail_data))}))
+
+# Converting all column names to lowercase
+names(cocktail_data) <- tolower(names(cocktail_data))
+
+# Dropping N/As in Important Columns
+cocktail_data %>%
+  filter(!is.na(cocktail_name), cocktail_name != '') %>%
+  filter(!is.na(ingredients), cocktail_name != '') %>%
+  filter(!is.na(preparation), cocktail_name != '')
+
+# Imputing NA into missing values
+cocktail_data[cocktail_data==''] <- NA
+
+# Exporting clean dataset
+saveRDS(cocktail_data, "./cocktail.rds")
+```
+
+# Exploratory Data Analysis (EDA)
+
+In this section we will explore our data a little bit further. It is important for us to get a feel for the data before we attempt to analyse it. The _DataExplorer_ package comes in very handy as it has several plotting functions that don't require any prior knowledge of the dataset. 
+
+```{r}
+head(cocktail_data)
+# view a summary of the data
+summary(cocktail_data)
+# function from DataExplorer, plot all the missing values in the data
+plot_missing(cocktail_data)
+```
+
+From the plot we can see that the column with the most NA values is the _notes_ sitting at 78% null. It is then followed by _bar_company_ at 61% and _location_ at 50%. On the other end of the spectrum, only the _ingredients_ and _cocktail_name_ are void of NAs.
+
+Our final data consists of 687 records, with 9 columns.
+
+# Creating a dataframe of cocktails and their ingredients
+
+One of the things we noticed while looking at the data is that a lot more meaningful analysis could be made if we had the list of ingredients used to make each cocktail. In the code below we create a new dataframe, _ingredients_df_, that contains the cockail name and corresponding ingredients, each on a new line. We stripped off the measurements because they were inconsistent and irrelevant for our purposes. However if you find that you would like to do something that requires it, you can come up with a clever regex to extract the measurements and create a new column with it.
+
+```{r}
+# changing the ingredients column to type character
+cocktail_data$ingredients <- as.character(cocktail_data$ingredients)
+
+# split the ingredients using a comma as the delimiter
+ingredients <- strsplit(cocktail_data$ingredients, split = ",")
+
+cocktail_ingredients <- cocktail_data %>% 
+  select(cocktail_name, ingredients)
+
+# creating the ingredients_df with the cocktail name repeated for every ingredient in it
+ingredients_df <- data.frame(name = rep(cocktail_data$cocktail_name, sapply(ingredients, length)), ingredients = unlist(ingredients)) 
+
+# removing measurements
+
+ingredients_df$ingredients <- str_remove(ingredients_df$ingredients, "^\\s+") 
+ingredients_df$ingredients <- str_remove(ingredients_df$ingredients, "^top|(\\.?\\d+?\\.*?\\-*?\\d*?\\s\\w+)")
+# remove space at beginning of line
+ingredients_df$ingredients <- str_remove(ingredients_df$ingredients, "^\\s+")
+# removing the few that still have "oz" at the start
+ingredients_df$ingredients <- str_remove(ingredients_df$ingredients, "^oz\\s+")
+# removing ranges, e.g. 6-7 mint leaves
+ingredients_df$ingredients <- str_remove(ingredients_df$ingredients, "^\\d+\\-\\d+\\s+")
+# removing numbers with double spaces after the 
+ingredients_df$ingredients <- str_remove(ingredients_df$ingredients, "^\\d+\\s\\s")
+ingredients_df$ingredients <- str_remove(ingredients_df$ingredients, "^\\.\\d+\\s+")
+ingredients_df$ingredients <- str_remove(ingredients_df$ingredients, "^/\\d+\\s+")
+ingredients_df$ingredients <- str_remove(ingredients_df$ingredients, "^\\d+/\\s+")
+
+head(ingredients_df)
+```
+# Plotting Functions
+
+In order to visualize our data, we are going to make use of some plotting functions. 
+
+```{r warning=FALSE, message=FALSE}
+the_plot_deg <- function(x, title) { 
+      ys <- create_layout(graph=x, layout = "stress")
+      ggraph(ys) +
+      geom_edge_fan(aes(alpha=weight),arrow = arrow(length = unit(0.08, "inches")), start_cap = circle(4,'mm'), end_cap = circle(4, 'mm')) +
+      geom_node_point(aes(color = as.factor(location) ) ) +
+      geom_node_text(aes(label = name), colour = 'black', vjust = 0.4, size = 2) + 
+      theme_graph() +
+      NULL
+}
+
+the_plot <- function(x, title) { 
+      ys <- create_layout(graph=x, layout = "fr")
+      ggraph(ys) +
+      geom_edge_fan( arrow = arrow(length = unit(0.08, "inches")), start_cap = circle(4,'mm'), end_cap = circle(4, 'mm')) +
+      geom_node_point(size = 8, colour = '#84D8E0') +
+      geom_node_text(aes(label = name), colour = 'black', vjust = 0.4, size = 2) + 
+      theme_graph() +
+      NULL
+}
+
+the_plot_col <- function(x, title) { 
+      ys <- create_layout(graph=x, layout = "fr")
+      ggraph(ys) +
+      geom_edge_fan(color = 'grey') +
+      geom_node_point(size = 4, aes(colour = color)) +
+      geom_node_text(aes(label = ifelse(type == TRUE, as.character(name),"")), colour = 'black', vjust = 0.4, size = 2) + 
+      theme_graph() +
+      NULL
+}
+```
+
+# Analysis on the data 
+
+Now that we have most of the cleaning out of the way, the required packages and functions, we can begin with the data and social network analysis.
+
+### Frequency of ingredients used across cocktails
+We'll start off by looking at how often ingredients are used across the dataset.
+
+```{r}
+ingredients_frequency <- as.data.frame(table(ingredients_df$ingredients))
+
+# filter out ingredients that only appear once
+ingredients_frequency <- ingredients_frequency %>% 
+  filter(Freq > 1) 
+
+colnames(ingredients_frequency) <- c("ingredient_name", "frequency")
+
+# sorting makes it easy for us to see which are the most and least commonly used ingredients
+ingredients_frequency <- ingredients_frequency[order(ingredients_frequency$frequency, decreasing = T),]
+
+# most commonly used ingredients
+head(ingredients_frequency)
+# leaste commonly used ingredients
+tail(ingredients_frequency)
+```
+
+### Bartenders and the locations that they have worked
+
+In order to determine useful information about bartenders and the location that they currently work and where they have worked in the past, a network graph is created below. The way to go about creating such a graph is to create a bipartite graph. A bipartite graph will essentially allow us to create a rectangular matrix, in the case below, the location is plotted in the x-axis and the bartender on the y-axis. The data is then converted to a graph from an incident matrix using the `graph_from_incidence_matrix` function. 
+
+```{r}
+# here the bartender and the location are selected from the main cocktail dataframe
+cocktails_bartender_loc <- cocktail_data %>%
+  select(bartender,location)%>%
+  filter(!is.na(bartender),!is.na(location), location!="",bartender!="" )
+
+# Creating a bipatrial graph from a dataframe of bartenders and locations
+x <- graph_from_data_frame(cocktails_bartender_loc)
+V(x)$type <- bipartite.mapping(x)$type
+inc_mat<-as_incidence_matrix(x)
+
+# a snippet of how the incidence matrix looks
+inc_mat[1:3, 1:6]
+
+# creating a graph from the matrix
+cocktail_bp_graph <- graph_from_incidence_matrix(inc_mat,directed = F)
+```
+
+Now that we have the graph, we plot it using one of the plot functions created above and set the colour of the node according to whether it represents a _bartender_ or _location_.
+
+```{r warning=FALSE, message=FALSE}
+V(cocktail_bp_graph)$color <- V(cocktail_bp_graph)$type
+
+# plot for the checking which bartender works in which location
+cocktail_bp_graph%>%
+  as_tbl_graph()%>%
+  mutate(color = if_else(color == FALSE, 'Bartender','Location'))%>%
+  the_plot_col()
+```
+
+The graph above shows the locations and all the bartenders with a relation to those locations. Interestingly they are very few nodes that are connected to more than one location. What this indicates is that the bartenders in our dataset rarely change their location. This can be attributed to a variety of different reasons, the data doesn't provide further insight on these reasons however, if we were to make an assumption, perhaps one of the reasons for the lack of mobility between locations, is the abundance of work opportunities in each area.
+
+Now we will consider the bipartial projection of the bartenders. From the bipartite graph a square matrix can be made. This can be achieved by using the `bipartite_projection` function. What the bipartite projection does is check if bartenders are connected by a location (i.e., if two bartenders are found in the location). This creates a square matrix with bartenders on both the x-axis and the y-axis. Having a square matrix allows for a simple undirected graph to be created where social network analysis can be performed. The same happens for the bipartite projection of location.
+
+```{r}
+# The bipartial projection of the bartenders, where it shows which bartenders have share the same location
+bartender_bipart_proj<-bipartite_projection(cocktail_bp_graph,multiplicity = T,which = F)%>% 
+  as_tbl_graph()%>%
+  activate(nodes)%>%
+  mutate(deg = centrality_degree(mode = "all"))
+bartender_bipart_proj
+
+# The bipartial projection of the location, where it shows which locations share bartenders
+loc_bipart_proj <- bipartite_projection(cocktail_bp_graph,multiplicity = T,which = T)%>% 
+  as_tbl_graph()%>%
+  activate(nodes)%>%
+  mutate(deg = centrality_degree(mode = "all"))
+```
+
+
+## Bartenders and the companies they work for
+
+Below is a function that we will use to create a bipartite graph
+
+```{r function for create Bipartite graph}
+bipart_graph <- function(df){
+  
+  x <- graph_from_data_frame(df)
+  V(x)$type <- bipartite.mapping(x)$type
+  inc_mat<-as_incidence_matrix(x)
+  return(graph_from_incidence_matrix(inc_mat,directed = F))
+  
+}
+```
+
+This section will analyse the relationship between bartenders and the companies they work for. In order to simplfy the data we are dealing with, we extract _bartender_ and _bar_company_ from the main cocktail data.
+
+```{r}
+# dataframe of bartenders and bar_companies
+cocktails_bartender_comp <- cocktail_data %>%
+  select(bartender,bar_company)%>%
+  filter(!is.na(bartender),!is.na(bar_company), bar_company!="",bartender!="" )
+```
+
+Then we use the function above to create a bipartite graph.
+
+```{r}
+cocktail_bp_graph<-bipart_graph(cocktails_bartender_comp)
+```
+
+In order to see how bartenders are connected by companies, a projection needs to be be done on the bipartite graph. This is done in the code chunck below. That projection is then turned into a tidygraph using the `as_tbl_graph`. Following that, the degree centrality is calculated in order to determine how well connected a bartender is in her network. Finally an extra column is added to the node dataframe which indicates whether the nodes have a connection or not to other nodes.
+
+
+```{r message=FALSE, warning=FALSE}
+# The bipartial projection of the bartenders, where it shows which bartenders have shared comapnies
+bartender_bipart_proj<-bipartite_projection(cocktail_bp_graph,multiplicity = T,which = F)%>% 
+  as_tbl_graph()%>%
+  activate(nodes)%>%
+  mutate(deg = centrality_degree(mode = "all"))%>%
+  mutate(connected = ifelse(deg>0,'Yes','No'))
+
+# code to graph the bipartial projection
+ggraph(bartender_bipart_proj, layout = 'fr') +
+  geom_node_point(aes(color = connected,size = deg*20) ) +
+  geom_edge_fan(aes(size = weight)) +
+  geom_node_text(aes(label = ifelse(deg>0,as.character(name),"")), colour = 'black', vjust = 0.4, size = 1.5) + 
+  theme_graph() +
+  scale_color_manual(values=c("#999999","#1AC3E1"))+
+  NULL
+```
+
+The graph produced above is interesting as it shows that in addition to bartenders tending to not move locations (as previously shown), there are actually only a few bartenders who have worked at more then one bar. 
+
+
+The names of the bartenders who have worked at more than one place are shown below.
+
+```{r}
+# get the names of the bartenders who have more then one degree of connection (hence have worked at more than one bar)
+connect_bartenders <- bartender_bipart_proj%>%
+  filter(deg>0)%>%
+  V()%>%
+  names()
+
+connect_bartenders
+```
+
+### Bartender and the ingredients they use
+
+We can also use _connect_bartenders_ to see which bartenders are connected and therfore create a network. We can explore this network further by analysing the ingredients that the bartenders in a network use. To do this we set the nodes as bartenders and the edges as the ingredients that they share in drinks. We then create a bipartite graph that contains ingredients and the bartenders that use them.
+
+```{r}
+# join the bartenders with the ingredients dataframe so that they can be checked
+bartenders_ing_connected<- cocktail_data%>%
+  filter(bartender %in% connect_bartenders )%>%
+  select(cocktail_name,bartender)%>%
+  inner_join(ingredients_df, by = c('cocktail_name'='name'))%>%
+  select(bartender,ingredients )%>%
+  filter(!is.na(bartender),!is.na(ingredients))
+
+# create a bipartial graph of the ingredients and the bartenders 
+cocktail_bp_graph <- bipart_graph(bartenders_ing_connected)
+```
+
+Now that we haave the bipartite graph, we can project it to create a graph of bartenders that are connected by the ingredients they use. From this the louvain community detection can be done on the graph. The louvain community detection will give the best possible grouping of the data. These groups can then be taken and analysed to see if these groups perhaps share similar ingredients due to similar places of work. Or perhaps they are more central in a community due to the more ingredients they use and therefore have more experience that other bartenders can draw from. 
+
+```{r}
+# Project the bartenders into a square matrix where there is a connection view common ingredients
+bart_ingrediants_bipart_proj <- bipartite_projection(cocktail_bp_graph, multiplicity = T, which = F)%>% 
+  as_tbl_graph()%>%
+  activate(nodes)%>%
+  mutate(deg = centrality_degree(mode = "all"),
+         louvain = group_louvain())%>%
+  activate(edges)%>%
+  mutate(deg_edge = centrality_edge_betweenness())%>%
+  activate(nodes)
+```
+
+The next step is to plot the graph we've just created.
+
+```{r}
+ bartender_network<- bartender_bipart_proj%>%
+  filter(deg>0)%>%
+  create_layout(layout = "fr")%>%
+  ggraph() +
+  geom_edge_fan(aes(alpha = weight)) +
+  geom_node_point(aes(size = deg, colour = 'red'  ) ) +
+  geom_node_text(aes(label = as.character(name) ),size = 2, colour = 'black', vjust = 0.4) +
+  theme_graph() +
+  theme(legend.position = "none") +
+  ggtitle("Bartender Comapny Network")+
+  NULL
+
+# Plot the functions, determine bartenders who share the most ingredients
+bartender_ingredients<-create_layout(graph=bart_ingrediants_bipart_proj, layout = "stress")%>%
+  ggraph() +
+  geom_edge_fan(aes(alpha = weight)) +
+  geom_node_point(aes(size = deg, colour = as.factor(louvain) ) ) +
+  geom_node_text(aes(label = as.character(name) ),size = 2, colour = 'black', vjust = 0.5) +
+  theme_graph() +
+  theme(legend.position = "none") +
+  ggtitle("Bartender Ingredients Network")+
+  NULL
+
+layout = matrix(c(1,1,2,2), nrow = 1)
+grid.arrange(bartender_ingredients, bartender_network,layout_matrix = layout )
+```
+
+The graph above shows the communities that detected in the from the graph data. The biggest community is the red one which contains very central nodes in the network. The best example is the bartender Brian Means who is a very central node in the network. This can be seen by the amount of connections he has to all other nodes and how most of the other nodes connect to him. This indicates that he shares a lot of ingredients with the other communites and within his community. The bartenders company network is shown on the right. In this network it can be seen that Brian Means is in the same network as Rual Ayala and in the ingredients network it can be seen that they are in the same community and are very close to each other. This indicates that they are are stronly connected by shared ingredients and shows that they might share common.
+
+To delve a bit deeper, will explore which ingredients are the most prominent in a community. To do this we will make use of the function below that saves the bartenders in a list depending on the community they belong in.
+
+```{r}
+# gets the names of the bartenders in a community and saves them in a list
+bartender_ingredients_comunities <- map(unique(V(bart_ingrediants_bipart_proj)$louvain), function(x){
+  bart_ingrediants_bipart_proj%>%
+    activate(nodes)%>%
+    filter(louvain == x)%>%
+    V()%>%
+    names()
+})
+```
+
+We then create a lollipop graph to show how similar the ingredients that the bartenders use in this community. A chi-squared correlation is used to infer whether the ingredients used are similar.
+
+```{r message=FALSE, warning=FALSE}
+library(tm)
+library(widyr)
+
+# The lolipop graph shows the most used ingredients for each community
+z_loli <- cocktail_data%>%
+    filter(bartender %in% bartender_ingredients_comunities[[1]])%>%
+    select(cocktail_name,bartender)%>%
+    left_join(ingredients_df, by = c('cocktail_name' = 'name'))
+
+z <- z_loli %>%
+  select(bartender, ingredients) %>%
+  gather(bartender, ingredients) %>% 
+  group_by(bartender) %>% 
+  mutate(id=1:n()) %>% 
+  spread(bartender, ingredients)
+
+cor_df <- map_df(2:length(z),function(x){
+  l<-map_dbl(2:length(z), function(y){
+    chi<-chisq.test(z[[x]],z[[y]])
+    chi$p.value
+  })
+  name<-as.character(colnames(z[x]))
+  data.frame(name= name,correlation = sum(l)/100)
+})
+
+z_loli_cor_df <- z_loli %>%
+  right_join(cor_df ,by = c('bartender' = 'name'))
+
+loli_pop <- z_loli_cor_df %>%
+    ggplot(aes(x=bartender, y=correlation)) +
+    geom_segment( aes(x=bartender, xend=bartender, y=0, yend=correlation), color="skyblue") +
+    geom_point( color="blue", size=4, alpha=0.6) +
+    theme_light() +
+    coord_flip() +
+    theme(
+      panel.grid.major.y = element_blank(),
+      panel.border = element_blank(),
+      axis.ticks.y = element_blank()
+    )+
+    ggtitle(paste('The Red Community'))+
+  ylab("ingredients chi-squared p-value")+
+  NULL
+
+plot <- create_layout(graph=bart_ingrediants_bipart_proj, layout = "stress")%>%
+  ggraph() +
+  geom_edge_fan(aes(alpha = weight)) +
+  geom_node_point(aes(size = deg, colour = as.factor(louvain) ) ) +
+  geom_node_text(aes(label = ifelse(as.character(name) %in% bartender_ingredients_comunities[[1]], as.character(name),"")),size = 2.5, colour = 'black', vjust = 0.5) +
+  theme_graph() +
+  theme(legend.position = "none") +
+  NULL
+
+layout = matrix(c(1,1,1,2,2), nrow = 1)
+grid.arrange(plot, loli_pop,layout_matrix = layout )
+```
+The two graphs above look at the red community and how similar their ingredients are. The correlation shows that these bartenders had on average a p-value of less than 0.05 and therefore the ingredients they used are dependent on the ingredients used by other bartenders. This is significant as it shows that bartenders in a community will often share ingredients and could therefore also share knowledge on which ingredients are best to use as they share similar ingredients in their cocktails and are linked by the bar that they work for or have previously worked for.
+
+### Cocktails and their preparation time
+Moving on from the ingredients used in cocktails, we will now turn our attention to the preparation of the cocktails. Just as a quick reminder, this is how the column looks:
+
+```{r}
+head(cocktail_data$preparation, n= 3)
+```
+
+As you can see, the data contains a lot of unwanted characters that need to be removed. Each row also needs to be split up into instructions that can be seen as the a technique used in that cocktail. In order to get this into a form that we will be able to use, we first have to do some cleaning. The code chunk below shows cleans the data and splits it into instructions using `strsplit` and regular expressions. The function `str_remove_all` from the stringr package is then used to clean these instructions in order to remove unwanted characters. 
+
+```{r}
+# link between perperation and ingredients
+
+# extract the preperations that are involved in a cocktail by seperating the sentances into new rows in the dataframe and then removing the unwanted characters using regular expressions
+
+# using the strsplit function to split up the sentences
+asd<-unlist(strsplit(as.character(cocktail_data$preparation), split = "(?<=[[:punct:]])\\s(?=[A-Z])", perl=T))
+perperation1<-(strsplit(as.character(asd), split = "[^a-z]*\\n[^a-z]*", perl=T))
+perperation2 <- strsplit(as.character(perperation1), split = "[^a-z]*\\.[^a-z]*", perl=T)
+perperation <- strsplit(as.character(perperation2), split = "[^a-z]*,[^a-z]*", perl=T)
+
+cocktail_preparation <- cocktail_data %>% 
+  select(cocktail_name, preparation)
+
+prep_df <- data.frame(name = rep(cocktail_data$cocktail_name, sapply(perperation, length)), perperation =
+                               unlist(perperation)) 
+
+# the str_remove function is used to remove unwanted characters
+prep_df_clean<-prep_df%>%
+  mutate(perperation = str_remove_all(perperation, "[^a-z]*\\)[^a-z]*"))%>%
+  mutate(perperation = str_remove_all(perperation, "\\)$"))%>%
+  mutate(perperation = str_remove_all(perperation, "[^a-z]*\\([^a-z]*"))%>%
+  mutate(perperation = str_remove_all(perperation, "[^a-z]*\"[^a-z]*"))%>%
+  mutate(perperation = str_remove_all(perperation, "[^a-z]*\\-[^a-z]*"))%>%
+  mutate(perperation = str_remove_all(perperation, "[^a-z]\\<[a-z]*\\>[^a-z]*"))%>%
+  mutate(perperation = str_remove_all(perperation, "[^a-z]\\<[a-z]*\\>[^a-z]*"))
+```
+
+Once the preperation techniques have been cleaned the udpipe package is used to extract the verbs from the data. The reason verbs are extracted is they can essentially describe how each bartender or cocktail is prepared using the verbs (e.g. the verbs shaken or stired can be used to determine if a bartender or cocktail share similar techniques for preperation).
+
+```{r warning=FALSE, message=FALSE}
+# Using udpipe to extract nouns and verbs
+if (file.exists("english-ud-2.0-170801.udpipe")) 
+  ud_model <- udpipe_load_model(file = "english-ud-2.0-170801.udpipe") else {
+    ud_model <- udpipe_download_model(language = "english")
+    ud_model <- udpipe_load_model(ud_model$file_model)
+  }
+
+# create the model that contains all Verbs 
+x<-udpipe_annotate(ud_model, as.character(prep_df_clean$perperation))
+x <- as.data.frame(x)
+table(x$upos)
+
+# filter for the verbs in the perperations
+stats_verb <- subset(x, upos %in% c("VERB"))
+
+# join with the cocktail dataframe 
+prep_df_clean_er<-prep_df_clean%>%
+  right_join(stats_verb, by=c("perperation" = "sentence"))%>%
+  select(name, perperation, token)
+
+# change column names
+colnames(prep_df_clean_er) <- c('name','perperation','perperation_verb')
+```
+
+Similarly as we have done before, we create a bipartite graph between bartenders and thier preperation verbs. This is to see how bartenders are connected by their preperation technique.
+
+```{r message=FALSE, warning=FALSE}
+# combine the prep dataframe with the original dataframe
+bar_prep_df<-prep_df_clean_er%>%
+  left_join(cocktail_data, by = c('name' = 'cocktail_name') )%>%
+  select(bartender, perperation_verb)%>%
+  filter(!is.na(perperation), !is.na(bartender))
+
+
+# create bipartiet graph
+cocktail_prep<- bipart_graph(bar_prep_df)
+
+
+# project the bipartiet graph and do some basic calculations
+cocktail_bp_prep_graph<-bipartite_projection(cocktail_prep, multiplicity = T, which = F)%>% 
+  as_tbl_graph()%>%
+  activate(edges)%>%
+  activate(nodes)%>%
+  mutate(deg = centrality_degree(mode = "all"),
+         louvain = group_louvain(),
+         page_rank = centrality_pagerank(),
+         cl = centrality_closeness(),
+         eigen = centrality_eigen(),
+         btw = centrality_betweenness())%>%
+  activate(edges)%>%
+  mutate(deg_edge = centrality_edge_betweenness())
+
+# get the communities that are calculated by louvain.
+cocktail_com <- map(unique(V(cocktail_bp_prep_graph)$louvain), function(x){
+  
+  cocktail_bp_prep_graph%>%
+    activate(nodes)%>%
+    filter(louvain == x)%>%
+    filter(deg > 1)
+})
+```
+Then we plot it.
+
+```{r}
+# plot the projected bartenders connected by preperation
+prep_plot<- create_layout(graph=cocktail_bp_prep_graph, layout = "stress")%>%
+  ggraph() +
+  geom_edge_fan(aes(alpha = weight/2)) +
+  geom_node_point(aes(size = deg, colour = as.factor(louvain) ) ) +
+  geom_node_text(aes(label = name ),size = 0.5, colour = 'black', vjust = 0.4) +
+  theme_graph() +
+  theme(legend.position = "none") +
+  NULL
+
+# display the second community
+prep_plot_com<-cocktail_com[[2]]%>%
+  create_layout(layout = "stress")%>%
+        ggraph(ys) +
+        geom_edge_fan(aes(alpha = weight/2 ),color = 'grey') +
+        geom_node_point(aes(size = eigen, colour = as.factor(louvain) ) ) +
+        geom_node_text(aes(label = ifelse(deg<40, "",as.character(name) )),size = 1.5, colour = 'black', vjust = 0.4) +
+        theme_graph() +
+        theme(legend.position = "none") +
+        NULL
+
+layout = matrix(c(1,1,2,2,
+                  1,1,2,2,
+                  1,1,2,2,
+                  1,1,2,2),nrow = 4, ncol = 4)
+grid.arrange(prep_plot,prep_plot_com,layout_matrix = layout )
+```
+
+The graphs above represent the bartenders who share similar preparation techniques. The network is very dense as the preparations that bartender use have similar verbs but from this communities can be detected.  as seen in the second graph which is a community that has been extracted from the graph. Here the bartender Kevin Diedrich is central as a lot of bartenders use the same preparation techniques as he does.
+
+```{r}
+# extract the bartenders in the different communites.
+bartender_preperation_comunities_bart <- map(unique(V(cocktail_bp_prep_graph)$louvain), function(x){
+  cocktail_bp_prep_graph%>%
+    activate(nodes)%>%
+    filter(louvain == x)%>%
+    V()%>%
+    names()
+})
+
+# The lolipop graph shows the most used ingredients for each community
+
+z_loli_prep <- cocktail_data%>%
+    filter(bartender %in% bartender_preperation_comunities_bart[[2]])%>%
+    select(cocktail_name,bartender)%>%
+    left_join(prep_df_clean_er, by = c('cocktail_name' = 'name'))
+
+z<-z_loli_prep%>%
+    select(bartender, perperation_verb)%>%
+    gather(bartender, perperation_verb) %>% 
+    group_by(bartender) %>% 
+    mutate(id=1:n()) %>% 
+    spread(bartender, perperation_verb)
+
+cor_df<-map_df(2:length(z),function(x){
+  z[[x]]<-as.factor(z[[x]])
+  l<-map_dbl(2:length(z), function(y){
+    z[[y]]<-as.factor(z[[y]])
+    out <- tryCatch({
+      chi<-chisq.test(z[[x]],z[[y]])
+      return(chi$p.value)
+      
+    },
+    error = function(err){
+     return(NA)
+    })
+    return(out)
+  })
+  print(colnames(z[x]))
+  name<-as.character(colnames(z[x]))
+  data.frame(name= name,correlation = sum(l)/100)
+})
+
+z_loli_cor_df_prep<-z_loli%>%
+  right_join(cor_df ,by = c('bartender' = 'name'))
+
+loli_graph_prep<-z_loli_cor_df_prep%>%
+    ggplot(aes(x=bartender, y=correlation)) +
+    geom_segment( aes(x=bartender, xend=bartender, y=0, yend=correlation), color="skyblue") +
+    geom_point( color="blue", size=4, alpha=0.6) +
+    theme_light() +
+    coord_flip() +
+    theme(panel.grid.major.y = element_blank(),
+      panel.border = element_blank(),
+      axis.ticks.y = element_blank())+
+    ggtitle(paste('Communitys'))+
+  ylab("Preperation chi-squared p-value")
+
+layout = matrix(c(1,1,2,2), nrow = 1)
+grid.arrange(prep_plot_com, loli_graph_prep,layout_matrix = layout)
+```
+The network above shows the bartenders and how they are connected via the way they prepare their cocktails. The lollipop graph shows the chi-squared correlation which indicates that most of the bartender's preparations overlap in this community and therefore share similar techniques. This can be seen from the fact that the chi-squared p-value score is less than 0.05 which means the bartenders are dependent on each other.  
+
+Below the cocktail ingredients and cocktail preparation are combined where an ingredient can have multiple preparation techniques. This creates a large graph and a subsection of this graph is created.
+
+```{r}
+# combine the prep dataframe with the ingredient dataframe
+prep_ing<-prep_df_clean_er%>%
+  left_join(ingredients_df, by = c('name' = 'name') )%>%
+  select(ingredients, perperation)%>%
+  filter(!is.na(ingredients), !is.na(perperation))
+
+# create bipartiet graph
+# bipart_graph(prep_ing)
+
+# create an undirected graph and do some basic calculations
+ing_prep_graph<-prep_ing%>%
+  as_tbl_graph(directed = F)%>%
+  activate(nodes)%>%
+  mutate(deg = centrality_degree(mode = "all"),
+         louvain = group_louvain(),
+         page_rank = centrality_pagerank(),
+         cl = centrality_closeness(),
+         eigen = centrality_eigen(),
+         btw = centrality_betweenness())%>%
+  activate(edges)%>%
+  mutate(deg_edge = centrality_edge_betweenness())
+```
+
+Now we plot the graph.
+
+```{r}
+# plot the graph
+map(unique(V(ing_prep_graph)$louvain), function(x){
+  print(x)
+  ing_prep_graph%>%
+    activate(nodes)%>%
+    filter(louvain == x)%>%
+    create_layout(layout = "stress")%>%
+    ggraph(ys) +
+    geom_edge_fan(aes(alpha = deg_edge)) +
+    geom_node_point(aes(size = deg, colour = as.factor(louvain) ) ) +
+    geom_node_text(aes(label = ifelse(deg<20, "",as.character(name) )),size = 3, colour = 'black', vjust = 0.4) +
+    theme_graph() +
+    theme(legend.position = "none") +
+    NULL
+})
+
+ing_prep_graph%>%
+    activate(nodes)%>%
+    filter(louvain == unique(V(ing_prep_graph)$louvain)[[18]])%>%
+    mutate(eigen = centrality_eigen(),
+           btw = centrality_betweenness() )%>%
+    create_layout(layout = "stress")%>%
+    ggraph(ys) +
+    geom_edge_fan(aes(alpha = deg_edge)) +
+    geom_node_point(aes(size = btw, colour = as.factor(louvain) ) ) +
+    geom_node_text(aes(label = ifelse(deg<20, "",as.character(name) )),size = 3, colour = 'black', vjust = 0.4) +
+    theme_graph() +
+    theme(legend.position = "none") +
+    NULL
+```
+
+What we plotted is the bipartite graph of the preparation and the ingredients. It can be seen that in this case, eggs are a bridge between a lot of nodes. The size of the node, in this case, indicates betweenness centrality. As seen below the egg has a large betweenness centrality as opposed to honey which has a smaller betweenness centrality but it is still large as it sits in between two clusters of nodes.
+
+```{r}
+ing_prep_graph%>%
+    activate(nodes)%>%
+    filter(louvain == unique(V(ing_prep_graph)$louvain)[[18]])%>%
+    mutate(eigen = centrality_eigen(),
+           betweenness_centrality = centrality_betweenness() )%>%
+  filter(name %in% c('egg','honey'))%>%
+  select(name, betweenness_centrality)
+```
+
+The code chunk below combines the cocktail names with ingredients. This is then projected from a bipartite graph to a simple undirected graph where the cocktails are linked via their communities.
+
+```{r}
+# Create a network of cocktails and there ingredients, edges are the common ingredients they share
+cocktail_ingredients <- cocktail_data%>%
+  select(cocktail_name)%>%
+  left_join(ingredients_df, by = c('cocktail_name' = 'name') )%>%
+  select(cocktail_name,ingredients)%>%
+  filter(!is.na(ingredients), !is.na(cocktail_name))
+
+# make bipatial graph
+cocktail_ingredients_dp_graph<- bipart_graph(cocktail_ingredients)
+
+# create cocktails and ingredients graphs
+cocktail_bp_prep_graph<-bipartite_projection(cocktail_ingredients_dp_graph, multiplicity = T, which = F)%>% 
+  as_tbl_graph()%>%
+  activate(edges)%>%
+  activate(nodes)%>%
+  mutate(deg = centrality_degree(mode = "all"),
+         louvain = group_louvain(),
+         page_rank = centrality_pagerank(),
+         cl = centrality_closeness(),
+         eigen = centrality_eigen(),
+         btw = centrality_betweenness())%>%
+  activate(edges)%>%
+  mutate(deg_edge = centrality_edge_betweenness())
+
+# get the comminities from and save them into a list
+cocktail_ingredients_communities <- map(unique(V(cocktail_bp_prep_graph)$louvain), function(x){
+  cocktail_bp_prep_graph%>%
+    activate(nodes)%>%
+    filter(louvain == x)
+})
+cocktail_ingredients_communities[[5]]%>%
+  ggraph(layout = "stress") +
+  geom_edge_fan(aes(alpha = weight), color="grey") +
+          geom_node_point(aes(size = deg, colour = "red" ) ) +
+          geom_node_text(aes(label = ifelse(deg<100, "",as.character(name) )),size = 3, colour = 'black', vjust = 0.4) +
+          theme_graph() +
+          theme(legend.position = "none") +
+          NULL
+```
+
+The graph here represents the cocktails in a community that are connected by certain ingredients. The graph is heavily clustered as these cocktails share a lot of similar ingredients. This community will be taken and checked to see if the ingredients used share similar preparation techniques.
+
+The communities are extracted from the cocktail ingredients graph in order to determine if the cocktails in these communities use similar preparations techniques based on the ingredients they use. We do this by extracting the cocktails that are found in these communities and combining them with their preparation techniques.
+
+```{r}
+# extract the nodes names of the communities, in this case cocktails 
+cockt_names<-cocktail_ingredients_communities[[5]]%>%
+    V()%>%
+    names()
+
+# clean get the preperation verbs
+prep_cockt <- prep_df_clean_er%>%
+    filter(name %in% cockt_names)%>%
+  select(name, perperation_verb)
+    
+# make bipartite graph
+cocktail_preperation_dp_graph <- bipart_graph(prep_cockt)
+    
+# create graph
+ing_prep_comunity<-bipartite_projection(cocktail_preperation_dp_graph, multiplicity = T, which = F)%>% 
+    as_tbl_graph()%>%
+    activate(edges)%>%
+    activate(nodes)%>%
+    mutate(deg = centrality_degree(mode = "all"),
+           louvain = group_louvain(),
+           page_rank = centrality_pagerank(),
+           cl = centrality_closeness(),
+           eigen = centrality_eigen(),
+           btw = centrality_betweenness())%>%
+    activate(edges)%>%
+    mutate(deg_edge = centrality_edge_betweenness())
+```
+
+```{r}
+ing_prep_comunity%>%
+  ggraph(layout = "stress") +
+  geom_edge_fan(aes(alpha = deg_edge), color="grey") +
+          geom_node_point(aes(size = deg, colour = "red" ) ) +
+          geom_node_text(aes(label = ifelse(deg<20, "",as.character(name) )),size = 3, colour = 'black', vjust = 0.4) +
+          theme_graph() +
+          theme(legend.position = "none") +
+          NULL
+```
+
+The graph represented here is densely clustered which indicates that the cocktail all share similar preparation techniques. The cocktails in this graph are derived from a community that was detected in the ingredents cocktail graph above. Therefore it can be determined that certain ingredients favour curtain preparation techniques.
+
+### Most popular words used for naming a cocktail
+
+This section will calculate the most frequent/popular words used for naming cocktails. The following code block will give a refresher of structure of the cocktail names that we will be analysing. 
+
+```{r viewing cocktail names data}
+# Viewing first and last 5 cocktail names
+head(cocktail_data$cocktail_name)
+tail(cocktail_data$cocktail_name)
+```
+
+The first step is to create a corpus text object that vectorises the cocktail name. Next we will create a document term matrix where each row represents a cocktail name and each column represents a term. The data is represented in binary format to indicate whether specific terms (words) occur in the document (cocktail name). This data is then converted into a matrix and transpose so that rows represent terms (words) and columns represent documents (cocktail names) to make calculating the word frequency easier.
+
+```{r creating cocktail names corpus and dtm}
+# Creating Corpus (list of all cocktail names)
+cocktail_names <- Corpus(VectorSource(cocktail_data$cocktail_name))
+
+# Creating DocumentTermMatrix of cocktail names
+dtm = DocumentTermMatrix(cocktail_names)
+
+# Transforming cocktail names document term matrix into a transposed matrix
+dtm <- as.matrix(dtm)
+dtm = t(as.matrix(dtm))
+```
+
+Next, we will calculate each word frequency by summing the each word and the number of times it occurs across all of the cocktail names. The word frequency are sorted in decreasing order to ensure that the most popular words are at the start of the list. This data is then transformed into a data frame to easily extract the words and their frequencies.
+
+```{r word frequency}
+# Calculating word frequency
+word_frequency <- sort(rowSums(dtm), decreasing = T)
+
+# Turning data into a data frame
+cocktail_name_freq <-as.data.frame(word_frequency)
+setDT(cocktail_name_freq, keep.rownames = T)[]
+colnames(cocktail_name_freq) <- c('cocktail_word', 'frequency')
+
+cocktail_name_freq$cocktail_word <- as.character(cocktail_name_freq$cocktail_word)
+```
+
+We can now plot the data into a lollipop graph that will show the most popular words with their frequencies in descending order.
+
+```{r lollipop graph}
+# # ADD LOLLIPOP GRAPH
+# cocktail_name_freq %>%
+#   ggplot(aes(x=cocktail_word, y=frequency)) +
+#     geom_segment( aes(xend=cocktail_word, y = 0, yend=frequency)) +
+#     geom_point(size=4, color="orange") +
+#     coord_flip() +
+#     theme_bw()
+```
+
+In the graph depicted above, we can see that the words "the, king's, cocktail, punch, and" are the most popular words used when naming cocktails. Additionally, for demonstration purposes, this data can also be plotted in a wordcloud graph using the `worldcloud` R package.
+
+```{r wordcloud}
+# Plotting most common words on a wordcloud graph
+wordcloud(head(names(word_frequency), 30), head(word_frequency, 30), scale = c(2,1), colors=brewer.pal(8, "Dark2"), random.order=F)
+```
+
+### Which cocktails are most difficult/take longest to prepare?
+
+This section will calculate which cocktails are the most difficult to prepare. Cocktail preparation difficult will be quantified as a number of preparation steps required to prepare the drink. To calculate this, the number of unique preparation steps per cocktail is counted. The data will be prepared as follows:
+
+```{r most difficult cocktails to prepare}
+# Counting number of preparation steps and extracting cocktail data 
+prep_steps <- cocktail_data %>%
+  select(cocktail_name, preparation) %>%
+  mutate(prep_steps = str_count(preparation, ','))
+
+# The preparation column will be removed as we are only interested in the number of prepartion steps per cocktail
+prep_steps$preparation <- NULL
+prep_steps <- prep_steps[1:100,]
+
+prep_step_ing <- ingredients_df %>%
+  left_join(cocktail_data, by = c('name' = 'cocktail_name'))
+
+x <- graph_from_data_frame(prep_step_ing)
+```
+
+Now we can create an incidence matrix on the preparation steps dataset. We will create a bipartite projection of the multiplicity, where the nodes are cocktail names and the edges are ingredients. Lastly, only cocktails that more than one preparation step is plotted.
+
+```{r most difficult cocktails to prepare plot}
+# Creating a bipartite mapping
+V(x)$type <- bipartite.mapping(x)$type
+
+# Creating an incidence matrix from the prepartion steps data frame
+inc_mat<-as_incidence_matrix(x)
+pop_ing_bp_graph <- graph_from_incidence_matrix(inc_mat, directed = F)
+
+# Creating bipartite projection of 
+prep_step_bp <- bipartite_projection(pop_ing_bp_graph, multiplicity = T, which = F) %>% 
+  as_tbl_graph() %>%
+  activate(nodes) %>%
+  left_join(prep_steps, by = c('name' = 'cocktail_name')) %>% 
+  activate(edges) %>%
+  mutate(deg_edge = centrality_edge_betweenness()) %>%
+  activate(nodes) %>% 
+  mutate(louvain = group_louvain())
+
+# Plotting the data
+create_layout(graph=prep_step_bp, layout = "stress") %>%
+  ggraph(ys) +
+  geom_node_point(aes(size = ifelse(prep_steps > 0, prep_steps, 1), color = as.factor(louvain))) +
+  geom_node_text(aes(label = ifelse(prep_steps > 3, as.character(name), ''))) +
+  theme_graph() +
+  theme(legend.position = "none") +
+  NULL
+```
+
+This graph shows the cocktails that require the most preparation steps, i.e. cocktails that require more than three steps to prepare. These cocktails include bon voyage pisco punch, chilcano (variation), nick & janae, on the wings of eagles, the bitter valley, happiness. 
+The size of the node indicates that the cocktail (node) requires more preparation steps. Therefore, we can see that bon voyage pisco punch requires the most amount of preparation steps and that the happiness cocktail requires the least number of steps.
+
+## Which ingredients are used most popularly
+
+For this question we want to explore which ingredients are the most popular. 
+
+```{r}
+# Create a bipartial graph of the ingredients and the cocktails 
+data_ing_small <- ingredients_df[1:100,]
+x <- graph_from_data_frame(data_ing_small)
+V(x)$type <- bipartite.mapping(x)$type
+inc_mat<-as_incidence_matrix(x)
+pop_ing_bp_graph <- graph_from_incidence_matrix(inc_mat,directed = F)
+V(pop_ing_bp_graph)$color <-V(pop_ing_bp_graph)$type
+
+# Project the most poopular ingredients bipartite graph (pop_ing_bp_graph) into a square matrix where there is a connection via common ingredients
+pop_ing_bipart_proj <- bipartite_projection(pop_ing_bp_graph,multiplicity = T,which = T)%>% 
+  as_tbl_graph()%>% 
+  activate(nodes)%>%
+  mutate(deg = centrality_degree(mode = "all"), #run various metrics on the data
+         louvain = group_louvain(),
+         page_rank = centrality_pagerank(),
+         cl = centrality_closeness(),
+         eigen = centrality_eigen(),
+         btw = centrality_betweenness())%>%
+  activate(edges) %>%
+  mutate(deg_edge = centrality_edge_betweenness())%>%
+  activate(nodes)
+```
+
+```{r}
+# Ingredients that are most often used together based off of the cocktails they are related to. The communities of clusters represent the cocktails that are similar based off of the ingredients they use.
+create_layout(graph=pop_ing_bipart_proj, layout = "fr")%>%
+  ggraph(ys) +
+  geom_edge_fan(aes(alpha = weight)) +
+  geom_node_point(aes(size = deg, colour = as.factor(louvain) ) ) +
+  geom_node_text(aes(label = ifelse(deg<=6, "",as.character(name) )),size = 3, colour = 'black', vjust = 0.4) +
+  theme_graph() +
+  theme(legend.position = "none") +
+  NULL
+```
+
+The different colours of the nodes represent different communities or clusters of ingredients. We can see that there are distinct communities/clusters of ingredients based off of the common cocktails that they are used in. The clustering of these ingredietns show which ingredients are usually used together. The nodes are depicted by the specific ingredients. The size of the node is depicted by the degree of the node and therefore the ingredients that have the highest degree are the largest nodes in size. This means that the most popular ingredients that are used among all the cocktails are the nodes with the highest degree. The graph above Shows a highly weighted edge between junipero gin and lemon juice. 
+
+
+```{r}
+#Examining the lemon juice and junipero gin nodes
+lemnon_gin <- bipartite_projection(pop_ing_bp_graph,multiplicity = T,which = T)%>% 
+  as_tbl_graph()%>% 
+  activate(nodes)%>%
+  mutate(deg = centrality_degree(mode = "all"), #run various metrics on the data
+         louvain = group_louvain(),
+         page_rank = centrality_pagerank(),
+         cl = centrality_closeness(),
+         eigen = centrality_eigen(),
+         btw = centrality_betweenness())%>%
+  activate(edges) %>%
+  mutate(deg_edge = centrality_edge_betweenness())%>%
+  activate(nodes) %>% 
+  filter(louvain == 1)
+```
+
+```{r}
+#plotting the lemon juice and junipero gin
+create_layout(graph=lemnon_gin, layout = "fr")%>%
+  ggraph(ys) +
+  geom_edge_fan(aes(alpha = weight)) +
+  geom_node_point(aes(size = deg, colour = as.factor(louvain) ) ) +
+  geom_node_text(aes(label = ifelse(deg<=2, "",as.character(name) )),size = 3, colour = 'black', vjust = 0.4) +
+  theme_graph() +
+  theme(legend.position = "none") +
+  NULL
+```
+
+By looking at this community more closely we can see that they are the two nodes with the highest degree and therefore are used the most in cocktails. The lemon juice and junipero gin are the most connected nodes in the community.
+
+```{r}
+# See the cocktails who link other similar cocktails together 
+create_layout(graph=pop_ing_bipart_proj, layout = "fr")%>%
+  ggraph(ys) +
+  geom_edge_fan(aes(alpha = weight)) +
+  geom_node_point(aes(size = btw/100, colour = as.factor(louvain) ) ) +
+  geom_node_text(aes(label = ifelse(btw/100<=2, "",as.character(name) ) ),size = 3, colour = 'black', vjust = 0.4) +
+  theme_graph() +
+  theme(legend.position = "none") +
+  NULL
+#ifelse(btw/100<=0.2, "",as.character(name) )
+```
+
+The metric depicted in this graph is betweenness. This shows that the largest nodes have the highest influence in that they are usually used with most other ingredients when making a cocktail. Junipero, lemon juice, king's ginger liqueur, lime juice, mezcal, barsol primero quebranta pisco and luxardo maraschino liqueur are the most influencial nodes in the network shown by their high betweenness centrality. This means that for any other ingredient to be linked to any other ingredient, the shortest path to get there would be through one of these main ingredients. This means that these ingredients compliment most other ingredients used in all the other cocktails. Of the above mentioned ingredients, luxardo marachino liqueur is the most influentiual node. This is closely followed by junipero gin and lemon juice which are in the same cluster. Lime juice is also holds a considerable influence in the network. The graph above demonstrate that they are the most complimentary ingridients among all cocktails since they are seen as bridging all the parts of the networks together. This means they are most likely to be mixed with other ingredients when creating cocktails.  
+
+```{r}
+# See the ingredients that are related to other highly connected ingredients. 
+create_layout(graph=pop_ing_bipart_proj, layout = "fr")%>%
+  ggraph(ys) +
+  geom_edge_fan(aes(alpha = weight)) +
+  geom_node_point(aes(size = eigen, colour = as.factor(louvain) ) ) +
+  geom_node_text(aes(label = ifelse(eigen<=0.5, "",as.character(name) )),size = 3, colour = 'black', vjust = 0.4) +
+  theme_graph() +
+  theme(legend.position = "none") +
+  NULL
+```
+
+The metric depicted in this graph is eigen vector centrality. This therefore shows that lemon juice and junipero gin are the most well connected nodes of all the ingredients. What this is also depicting is that the cluster that these two ingredients fall into is the most connected cluster of ingredients in the whole network. This means that this cluster contains ingredients that are connected to other ingredients that are used with many other ingredients as well. This cluster contains the most genericly used ingredients when making cocktails.
+
+
+# Complementary Questions
+### Which garnishes complement which ingredients?
+
+Here we will calculate which garnishes are complementary to each type of ingredient. An overview of the data that will be used is presented below:
+
+```{r viewing data garnishes and ingredients}
+# Viewing the garnishes and ingredients
+head(cocktail_data$garnish)
+head(cocktail_data$ingredients)
+```
+
+We will start by extracting the garnish and ingredients data.
+
+```{r extracting garnish, cocktail name and ingredients}
+# Extracting garnish, cocktail name and ingredients data
+cocktails <- cocktail_data %>%
+  select(garnish, cocktail_name) %>%
+  na.omit()
+  
+garnish <- cocktail_data %>%
+  select(garnish, cocktail_name) %>% 
+  na.omit()
+
+ingredients <- ingredients_df %>%
+  select(ingredients, name) %>%
+  na.omit()
+```
+
+An incidence matrix is created from the garnish data frame and this data is plotted on a bipartite projection graph. In the bipartite project graph, the nodes are both garnishes and ingredients. The edges are ingredients. 
+
+```{r}
+# Creating granish graph bipartite graph object
+garnish <- graph_from_data_frame(garnish)
+V(garnish)$type <- bipartite.mapping(garnish)$type
+
+# Creating incidence matrix
+garnish_inc <- as_incidence_matrix(garnish)
+garnish_bp_graph <- graph_from_incidence_matrix(garnish_inc, directed = F)
+V(garnish_bp_graph)$color <- V(garnish_bp_graph)$type
+
+# Projecting bipartite data
+garnish_bp <- bipartite.projection(garnish_bp_graph, multiplicity = T, which = F) %>% 
+  as_tbl_graph(directed = F) %>% 
+  activate(nodes) %>%
+  mutate(louvain = group_louvain()) 
+
+# Plotting granish graph object data
+granishes <- cocktail_data %>%
+  na.omit() %>%
+  select(garnish, cocktail_name) %>%
+  left_join(ingredients, by = c('cocktail_name' = 'name')) %>%
+  select(garnish, ingredients) %>%
+  graph_from_data_frame(directed = F) %>%
+  plot() %>%
+  title('Garnish VS. Ingredients')
+```
+
+![Graph](garnish_ingredients_graph.PNG)
+
+The above graph displays all garnishes and the ingredients that they compliment. For example, we can see that lemon zest compliments vermut vermouth, chinaco blanco tequila, giffard banane du braosn, and bittercube jamaican #2 bitters. The freshly greated cinnamon (garnish) compliments the following ingredients: bourbon, fresh egg whites, lime juice and luxardo amaretto di saschira.
+
+### Which glassware compliment which cocktails?
+
+This section will construct a network that compares glassware and cocktails in order to determine which cocktail glasses complement which cocktail drinks. An overview of the data that will be used is presented below.
+
+```{r}
+# Viewing the glassware and cocktail names
+head(cocktail_data$cocktail_name, n = 10)
+head(cocktail_data$glassware, n = 10)
+```
+
+First we will extract all glasswares and cocktail names and create a igraph object from the data frame. Then we will create convert the glasswares data frame into an incidence matrix and plot the data on a bipartite projection graph.
+
+```{r}
+# Extracting and plotting the glassware and cocktail name data
+glasswares <- cocktail_data %>%
+  na.omit() %>%
+  select(glassware, cocktail_name) %>%
+  group_by(glassware) %>%
+  graph_from_data_frame(directed = F)
+
+# Creating a bipartite mapping of cocktail glasswares
+V(glasswares)$type <- bipartite.mapping(glasswares)$type
+
+# Creating an incidence matrix from the glassware data frame object
+glasswares_inc <- as_incidence_matrix(glasswares)
+glasswares_bp_graph <- graph_from_incidence_matrix(glasswares_inc, directed = F)
+V(glasswares_bp_graph)$color <- V(glasswares_bp_graph)$type
+
+# Creating bipartite projection of glasswares to cocktails
+glasswares_bp <- bipartite.projection(glasswares, multiplicity = T, which = T) %>% 
+  as_tbl_graph(directed = F) %>% 
+  activate(nodes) %>%
+  mutate(louvain = group_louvain(), deg = centrality_degree())
+
+# Plot Main Graph
+plot(glasswares_bp)
+```
+
+In the network graph, it is apparent that are two relatively dense clusters, one triad and three dyadic clusters. In the densest cluster present in the network graph, we can see that mother superior, hippie hill, sage & sound, the chief, and other cocktails all share the same glasses.
+
+In the triad cluster, creole, gin made me do it and cacao martini all use the same cocktail glass. In terms of the dryads, it is evident that only two cocktails share the same cocktail class. For example, nectar of the amazon and lux shandy both or nori & islay and sahara glowing heart both share the same glasses. It is also evident that specific cocktails use unique glasses. Examples of these cocktails include: junipero jolly, improved calvados, tea & sympathy, and classic lolita.
+
+```{r}
+# Fetch name of all glasswares where the cocktails are linked to each other
+connected_cocktails <- glasswares_bp %>%
+  filter(deg > 0) %>%
+  V() %>%
+  names()
+
+# Joining connected cocktails to ingredients data frame 
+connected_cocktails_inc <- cocktail_data %>% 
+  filter(cocktail_name %in% connected_cocktails) %>%
+  select(cocktail_name) %>%
+  inner_join(ingredients_df, by = c('cocktail_name' = 'name')) %>%
+  select(cocktail_name, ingredients)
+
+connected_cocktails_inc <- connected_cocktails_inc %>%
+  as_tbl_graph(directed = F)
+
+# 
+V(connected_cocktails_inc)$type <- bipartite.mapping(connected_cocktails_inc)$type
+glasswares_conn_cocktails_inc <- as_incidence_matrix(connected_cocktails_inc)
+glasswares_cocktail_bp_graph <- graph_from_incidence_matrix(glasswares_conn_cocktails_inc, directed = F)
+```
+
+We can now create a bipartite projection of the glassware and cocktail network data. In this graph, the nodes are the cocktail names and the edges are the ingredients that are shared between cocktails. The nodes are coloured by the type of glassware that each cocktail (node) uses.
+
+```{r}
+# Calculating degree centraility and louvain communities
+glasses_bp <- bipartite.projection(glasswares_cocktail_bp_graph, multiplicity = T, which = F) %>% 
+  as_tbl_graph(directed = F) %>% 
+  activate(nodes) %>%
+  mutate(louvain = group_louvain(), deg = centrality_degree())
+
+glasses <- cocktail_data %>%
+  select(cocktail_name, glassware)
+
+# Plotting the glassware bipartite graph
+glasses_bp %>%
+  as_tbl_graph(directed = F) %>%
+  activate(nodes) %>%
+  mutate(deg = centrality_degree()) %>%
+  left_join(glasses, by = c('name' = 'cocktail_name')) %>%
+  na.omit() %>%
+  ggraph(layout = 'nicely') +
+  geom_edge_fan() +
+  geom_node_point(aes(size=deg, colour = glassware ) ) +
+  geom_node_text(aes(label = as.character(name)), size = 3, color =   'black', vjust = 0.4) +
+  ggtitle('') +
+  theme_void() + 
+  NULL
+```
+
+This graph shows all cocktails (nodes) that share share ingredients (edges) and glasses (node colour). From this graph, we can infer which cocktails share ingredients and therefore, share glasses. We can see that following cocktails (nodes): the nutty sensation, where's my orgeat, sage & sound, mother's superior and san francisco harvest all share similar ingredients (edges) and therefore, use the same type of glassware (coupe).
+
+### Hierarchical Clustering of Cocktail Names based on similarity in Ingredients
+
+This section will demonstrate how one can use machine learning to cluster data points and how these clustered points can be plotted on a network graph. The data that will be used here is presented below.
+
+```{r}
+# Extracting cocktail name and ingrdients data
+name_ing <- cocktail_data %>%
+  select(cocktail_name, ingredients)
+
+head(name_ing)
+```
+
+We will start by calculating the term frequency - inverse document frequency (TF-IDF). TF-IDF is a measure that indicates how important a word is to a document in a corpus. TF-IDF is the product of the term frequency and inverse document frequency. The tf–idf value increases relative to the number of times a word appears in the document and is offset by the number of documents in the corpus that contain the word.
+Therefore, the higher the TF-IDF score, the more uncommon the term is. In our implementation of weighted TF-IDF, each cocktail name is a vector and it's length is the size of the remaining vocabulary. Each component is valued according to word frequency and it's meaningfulness in the text corpus. 
+
+If this terms remain unclear, please consider reading up on [TF-IDF](https://www.tidytextmining.com/tfidf.html) and [hierarchical clustering](https://towardsdatascience.com/understanding-the-concept-of-hierarchical-clustering-technique-c6e8243758ec), and then return to this tutorial.
+
+The following code block tokenises each word in cocktail ingredients and calculates each word's occurrence, TF, IDF, and TF-IDF. The TF data frame is then casted in a document term matrix. A document term matrix is matrix that presents the frequency of terms that occur in a collection of documents. In a document-term matrix, rows correspond to documents in the corpus and columns correspond to terms. In our case, the column corresponds to cocktails and the terms corresponds to words in each cocktail's ingredients.
+
+After this, we use the `dist` to return a distance matrix that is computed by using the cosine distance measure to compute the distances between the rows of a data matrix. We can now use hierarchical clustering (`hclust`) function with the `ward.D2` method to find compact and spherical clusters. Lastly, we use the `cutree` function to cut the dendrogram tree into 16 groups by setting the desired number of clusters `k` to 16.
+
+```{r}
+# Tokenising words and calculating tf_idf and creating a document term matrix
+name_tf <- name_ing %>% 
+  unnest_tokens(token, ingredients, 'words') %>% 
+  add_count(cocktail_name, token) %>% 
+  bind_tf_idf(token, document = cocktail_name, n = n) %>%
+  cast_dtm(cocktail_name, token, tf_idf)
+
+# Calculating the cosine distance 
+name_tf_dist_mx = dist(as.matrix(name_tf), method = "cosine")
+
+# Hierarchical Clustering
+clustering.hierarchical <- hclust(name_tf_dist_mx, method = "ward.D2")
+
+# Principal coordinates analysis
+points <- cmdscale(name_tf_dist_mx, k = 16)
+child.hierarchical <- cutree(clustering.hierarchical, k = 16)
+```
+
+We can plot the output of the hierarchical clustering algorithm to visualise each cluster and where each cluster (colour) of nodes are positioned in relation to all other clusters. In the graph depicted below, the nodes are cocktails that are clustered together based on similarity in ingredients. Where multiple different colour nodes overlap, this means that those nodes share similar ingredients with different clusters (colours) of nodes.
+
+```{r plotting hierarchical clusters}
+# Plotting the hierarchical clustering data
+plot(points,
+     main = 'Hierarchical clustering',
+     col = as.factor(child.hierarchical),
+     mai = c(0, 0, 0, 0),
+     mar = c(0, 0, 0, 0),
+     xaxt = 'n', yaxt = 'n',
+     xlab = '', ylab = '')
+```
+
+We can infer that the cluster that is represented by the grey cocktails use unique ingredients, whereas the red, light blue, dark blue and purple clusters of cocktails express a tendency of sharing similar ingredients in their cocktails. This graph is useful to identify whether clusters of cocktails use similar ingredients and also how each cocktail in a specific cluster share or do not share similar ingredients (based on their position relative to the center of their cluster (color)).
+
+```{r appending cluster numbers to original cocktail data}
+# Extracting cluster numbers and assigning themto the orginal data
+head(child.hierarchical) # Viewing first 5 cocktail nodes and their cluster numbers
+
+# Turning data into a data frame
+x<-as.data.frame(child.hierarchical)
+
+setDT(x,keep.rownames = T)[]
+colnames(x) <- c('cocktail_name','cluster')
+
+# Creating new clustered cocktail data frame
+clustered_cocktail_data <- cocktail_data %>%
+  left_join(x, by = c('cocktail_name', 'cocktail_name'))
+
+head(clustered_cocktail_data)
+```
+
+We can now plot the cluster data to visualise the unique clusters of cocktails. The nodes represent distinct cocktails and clusters of nodes represent nodes that are grouped together based on similarity of ingredients between the cocktails. `the_plot` function uses the ggraph package to plot neat network graphs. 
+
+```{r plotting all cluster data}
+the_plot <- function(x, title) { 
+      ys <- create_layout(graph=x, layout = "stress")
+      ggraph(ys) +
+      geom_edge_fan(start_cap = circle(4,'mm'), end_cap = circle(4, 'mm')) +
+      geom_node_point(size = 4, colour = "#84D8E0") +
+      geom_node_text(aes(label = name), colour = 'black', vjust = 0.4, size = 2, check_overlap = T) + 
+      theme_graph() +
+      NULL
+}
+
+clustered_cocktail_data %>% 
+  select(cocktail_name, cluster) %>% 
+  as_tbl_graph() %>%
+  activate(nodes) %>% 
+  the_plot() +
+  ggtitle('Hierarchial Clustering of Cocktails based Ingredients')
+```
+
+In the graph above, 16 different clusters where each cocktail (node) that resides in the cluster share similar ingredients with other nodes in their immediate cluster. For example, we can see that in cluster 5, bon voyage pisco punch, nori & islay and radice amara all share similar ingredients. Additionally, we can see that in cluster 10, war of the roses, the big picture and template of the moon all share similar ingredients. Therefore, the this graph is useful to identify cocktails that share similar ingredients.
+
+Now that the cluster numbers have been appended to the original cocktail data, we can extract out the cocktails (names) that belong to the same cluster. For example, here we pull out the names of cocktails that belong to cluster 15. We can now plot cluster 15's data onto a graph using the `tidygraph` package. Any node text/label that overlaps is removed to make the graph more readable.
+
+```{r plotting the fifth cluster}
+# Creating network graph of all cocktails clustered by similar ingredients
+network_cocktail_cluster <- clustered_cocktail_data %>%
+  select(cocktail_name, cluster) %>%
+  filter(cluster == 15)
+
+# Plotting the network data
+as_tbl_graph(network_cocktail_cluster) %>%
+  activate(nodes) %>% the_plot()
+```
+
+In the network graph presented above, it is evident that many cocktails share similar ingredients. For example, la maracuja, la batida loca, brazillian mai tai, citrus agave caipirinha, rio de janeiro mule and ypióca yellow card all share similar ingredients and were therefore, grouped under the 15th cluster during the previous hierarchical clustering process. We can see that the naming convention for the aforementioned cocktails seems to be of or related to Brazillian origin. Therefore, we can understand that the cluster 15's cocktails may be of Brazillian origin or derived from Brazzlian culture. We can appreciate that these Brazzillian-sounding cocktails use similar ingredients.
+
+Now we can filter the original data for cocktails that belong to a specific cluster (in our case cluster 15) and begin to make inferences from the data. For example, what ingredients do the cocktails (nodes) have in common or are their any similarities in the names of cocktails based on their similarity in ingredients. The code block below will extract each cocktail name and their ingredients for each cocktail that belongs to cluster 15.
+
+```{r cluster 5}
+clustered_cocktail_data %>%
+  select(cocktail_name, ingredients, cluster) %>%
+  filter(cluster == 15) %>%
+  head(10)
+```
+
+We can see that the cocktails that are closely clustered in cluster 15 have one or more of the following ingredients in common: 
+
+  * ypióca brasilizar cachaça prata reserva especial
+  * fresh passion fruit
+  * lemon juice
+  * condensed milk
+  * fruit juice
+
+As depicted above, cocktails that share similar ingredients have been clustered together. Therefore, we can infer that the cocktails that have been clustered in cluster 15 use similar ingredients such as ypióca brasilizar cachaça prata reserva especial and fresh passion fruit. We can speculate that these ingredients may be unique to Brazillian culture or cuisine. As a result of cluster 15's cocktails sharing ingredients that are potentially of Brazzillian origin, said cocktails express a tendency to be named in a manner that relates the cocktails to Brazil. Examples include: rio de janeiro mule, brazilian mai tai and ypioca yellow card. Please keep in mind that this is only one possible example as we could analyse each cluster in more significant detail.
+
+# Conclusion
+
+The main purpose of this blog post was to hopefully teach you something useful that you can use in your own right. We want to show that Social Network Analysis can be used not only in the SNA industry, but as a generalised data analysis tool for any industry and any data type that you may be given. The advantage of doing so is that SNA provides a way to gain inferences that may not have been realised using other conventional data analysis techniques. 
+
+In the blog above we outlined the basic description of what the data is, the column names, data types of each column and some general statistics to show how the data is structured. Once the basic exploratory analysis was complete we went into gaining some insight into the dataset by using SNA techniques as well as some natural language processing algorithms and other machine learning techniques at the end of the blog. Some of our findings were as follows.
+
+We discovered which bartenders have a common connection based on the bar that they are associated with, from this we also determined whether bartenders in the same location/cluster used similar ingredients. We found out which ingredients are the most popular among all cocktails and within different clusters of cocktails. We were also able to find the most generic ingredients that are almost always paired with a lot of other ingredients. We also discovered which words were the most popular to use when naming a cocktail. We were able to determine which cocktails are the most difficult to prepare based off our own logic and assumptions on how to determine this. We then went into correlation type analysis and went out to determine which garnishes compliment which ingredients, which alcohol compliments which mixer and which glassware compliments which cocktail type. We also analysed which glasses are associated with which cocktails.
+
+The purpose of this exercise was to demonstrate how to do data analysis on a random dataset by using social network analysis techniques. We hope that you have learnt something of value by reading this blog post, or at the very least found some of the findings interesting, because we sure did. 
