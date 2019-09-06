@@ -379,10 +379,7 @@ bartender_ingredients_comunities <- map(unique(V(bart_ingrediants_bipart_proj)$l
 
 We then create a lollipop graph to show how similar the ingredients that the bartenders use in this community. A chi-squared correlation is used to infer whether the ingredients used are similar.
 
-```{r message=FALSE, warning=FALSE}
-library(tm)
-library(widyr)
-
+```{r message=FALSE, warning=FALSE,results="hide"}
 # The lolipop graph shows the most used ingredients for each community
 z_loli <- cocktail_data%>%
     filter(bartender %in% bartender_ingredients_comunities[[1]])%>%
@@ -396,13 +393,19 @@ z <- z_loli %>%
   mutate(id=1:n()) %>% 
   spread(bartender, ingredients)
 
-cor_df <- map_df(2:length(z),function(x){
+cor_df<-map_df(2:length(z),function(x){
+
   l<-map_dbl(2:length(z), function(y){
-    chi<-chisq.test(z[[x]],z[[y]])
+    if(colnames(z[x]) != colnames(z[y])){
+    chi<-invisible(chisq.test(z[[x]],z[[y]]))
     chi$p.value
+    }else{
+      0
+    }
   })
+
   name<-as.character(colnames(z[x]))
-  data.frame(name= name,correlation = sum(l)/100)
+  data.frame(name= name,correlation = sum(l)/length(l))
 })
 
 z_loli_cor_df <- z_loli %>%
@@ -431,11 +434,14 @@ plot <- create_layout(graph=bart_ingrediants_bipart_proj, layout = "stress")%>%
   theme_graph() +
   theme(legend.position = "none") +
   NULL
+```
 
+Plot the graphs
+```{r message=FALSE, warning=FALSE}
 layout = matrix(c(1,1,1,2,2), nrow = 1)
 grid.arrange(plot, loli_pop,layout_matrix = layout )
 ```
-The two graphs above look at the red community and how similar their ingredients are. The correlation shows that these bartenders had on average a p-value of less than 0.05 and therefore the ingredients they used are dependent on the ingredients used by other bartenders. This is significant as it shows that bartenders in a community will often share ingredients and could therefore also share knowledge on which ingredients are best to use as they share similar ingredients in their cocktails and are linked by the bar that they work for or have previously worked for.
+The two graphs above look at the red community and how similar their ingredients are. The correlation shows that these bartenders had on average a p-value of greater than 0.05 and therefore the ingredients they used are independent of the ingredients used by other bartenders. This is is not significant as it shows that bartenders a bartenders use of an ingredient will not affect whether other bartenders use those ingrefients. Therefore it can be concluded that bartenders from a similar community do not use ingredients because of the other bartenders in their network.
 
 ### Cocktails and their preparation time
 Moving on from the ingredients used in cocktails, we will now turn our attention to the preparation of the cocktails. Just as a quick reminder, this is how the column looks:
@@ -562,16 +568,13 @@ prep_plot_com<-cocktail_com[[2]]%>%
         theme(legend.position = "none") +
         NULL
 
-layout = matrix(c(1,1,2,2,
-                  1,1,2,2,
-                  1,1,2,2,
-                  1,1,2,2),nrow = 4, ncol = 4)
-grid.arrange(prep_plot,prep_plot_com,layout_matrix = layout )
+prep_plot
+prep_plot_com
 ```
 
 The graphs above represent the bartenders who share similar preparation techniques. The network is very dense as the preparations that bartender use have similar verbs but from this communities can be detected.  as seen in the second graph which is a community that has been extracted from the graph. Here the bartender Kevin Diedrich is central as a lot of bartenders use the same preparation techniques as he does.
 
-```{r}
+```{r message=FALSE, warning=FALSE,results="hide"}
 # extract the bartenders in the different communites.
 bartender_preperation_comunities_bart <- map(unique(V(cocktail_bp_prep_graph)$louvain), function(x){
   cocktail_bp_prep_graph%>%
@@ -600,18 +603,22 @@ cor_df<-map_df(2:length(z),function(x){
   l<-map_dbl(2:length(z), function(y){
     z[[y]]<-as.factor(z[[y]])
     out <- tryCatch({
+      if(colnames(z[x]) != colnames(z[y])){
       chi<-chisq.test(z[[x]],z[[y]])
       return(chi$p.value)
+      }else{
+        return(0)
+      }
       
     },
     error = function(err){
-     return(NA)
+     return(0)
     })
     return(out)
   })
-  print(colnames(z[x]))
   name<-as.character(colnames(z[x]))
-  data.frame(name= name,correlation = sum(l)/100)
+  cor <- sum(l)/length(l)
+  data.frame(name= name,correlation = cor)
 })
 
 z_loli_cor_df_prep<-z_loli%>%
@@ -627,12 +634,17 @@ loli_graph_prep<-z_loli_cor_df_prep%>%
       panel.border = element_blank(),
       axis.ticks.y = element_blank())+
     ggtitle(paste('Communitys'))+
-  ylab("Preperation chi-squared p-value")
+  ylab("P-value")
+
+```
+
+Plot the graph
+```{r}
 
 layout = matrix(c(1,1,2,2), nrow = 1)
 grid.arrange(prep_plot_com, loli_graph_prep,layout_matrix = layout)
 ```
-The network above shows the bartenders and how they are connected via the way they prepare their cocktails. The lollipop graph shows the chi-squared correlation which indicates that most of the bartender's preparations overlap in this community and therefore share similar techniques. This can be seen from the fact that the chi-squared p-value score is less than 0.05 which means the bartenders are dependent on each other.  
+The network above shows the bartenders and how they are connected via the way they prepare their cocktails. The lollipop graph shows the chi-squared correlation p-value which indicates that most of the bartender's preparations techniques do not indicate that one bartender's technique will influence another as they are independent. This can be seen from the fact that the chi-squared p-value score is greater than 0.05 which means the bartenders are independent of each other. 
 
 Below the cocktail ingredients and cocktail preparation are combined where an ingredient can have multiple preparation techniques. This creates a large graph and a subsection of this graph is created.
 
@@ -664,20 +676,20 @@ Now we plot the graph.
 
 ```{r}
 # plot the graph
-map(unique(V(ing_prep_graph)$louvain), function(x){
-  print(x)
-  ing_prep_graph%>%
-    activate(nodes)%>%
-    filter(louvain == x)%>%
-    create_layout(layout = "stress")%>%
-    ggraph(ys) +
-    geom_edge_fan(aes(alpha = deg_edge)) +
-    geom_node_point(aes(size = deg, colour = as.factor(louvain) ) ) +
-    geom_node_text(aes(label = ifelse(deg<20, "",as.character(name) )),size = 3, colour = 'black', vjust = 0.4) +
-    theme_graph() +
-    theme(legend.position = "none") +
-    NULL
-})
+# map(unique(V(ing_prep_graph)$louvain), function(x){
+#   print(x)
+#   ing_prep_graph%>%
+#     activate(nodes)%>%
+#     filter(louvain == x)%>%
+#     create_layout(layout = "stress")%>%
+#     ggraph(ys) +
+#     geom_edge_fan(aes(alpha = deg_edge)) +
+#     geom_node_point(aes(size = deg, colour = as.factor(louvain) ) ) +
+#     geom_node_text(aes(label = ifelse(deg<20, "",as.character(name) )),size = 3, colour = 'black', vjust = 0.4) +
+#     theme_graph() +
+#     theme(legend.position = "none") +
+#     NULL
+# })
 
 ing_prep_graph%>%
     activate(nodes)%>%
@@ -793,7 +805,69 @@ ing_prep_comunity%>%
           NULL
 ```
 
-The graph represented here is densely clustered which indicates that the cocktail all share similar preparation techniques. The cocktails in this graph are derived from a community that was detected in the ingredents cocktail graph above. Therefore it can be determined that certain ingredients favour curtain preparation techniques.
+The graph represented here is densely clustered which indicates that the cocktail all share similar preparation techniques. The cocktails in this graph are derived from a community that was detected in the ingredients cocktail graph above. Therefore it can be determined that certain ingredients favour curtain preparation techniques.
+
+```{r message=FALSE, warning=FALSE,results="hide"}
+names <- unique(V(ing_prep_comunity)$name)
+z_loli_prep <- prep_df_clean_er%>%
+    filter(name %in% names)
+
+z_df<-z_loli_prep%>%
+    select(name, perperation_verb)%>%
+    gather(name, perperation_verb) %>%
+    group_by(name) %>%
+    mutate(id=1:n()) %>%
+    spread(name, perperation_verb)
+
+cor_df_d <- map_df(2:length(z_df),function(x){
+  l <- map_dbl(2:length(z_df), function(y){
+      out <- tryCatch({
+        
+        chi<-chisq.test(z_df[[x]],z_df[[y]])
+        return(chi$p.value)
+        },
+        error = function(err){
+          return(0)
+        })
+      return(out)
+  })
+  cor = (sum(l)/length(l))
+  name<-as.character(colnames(z_df[x]))
+  data.frame(name= name,correlation = cor)
+})
+
+z_loli_cor_df_prep<-z_loli_prep%>%
+  right_join(cor_df_d ,by = c('name' = 'name'))
+
+loli_graph_prep<-z_loli_cor_df_prep%>%
+    ggplot(aes(x=name, y=correlation)) +
+    geom_segment( aes(x=name, xend=name, y=0, yend=correlation), color="skyblue") +
+    geom_point( color="blue", size=4, alpha=0.6) +
+    theme_light() +
+    coord_flip() +
+    theme(panel.grid.major.y = element_blank(),
+      panel.border = element_blank(),
+      axis.ticks.y = element_blank())+
+    ggtitle(paste('Check for dependence of\n preperation to ingredients'))+
+  ylab("P-Value")
+
+prep_ing_graph<- ing_prep_comunity%>%
+  ggraph(layout = "stress") +
+  geom_edge_fan(aes(alpha = deg_edge), color="grey") +
+          geom_node_point(aes(size = deg, colour = "red" ) ) +
+          geom_node_text(aes(label = ifelse(deg<20, "",as.character(name) )),size = 3, colour = 'black', vjust = 0.4) +
+          theme_graph() +
+          theme(legend.position = "none")+
+          NULL
+```
+
+Plot the graph
+```{r}
+layout = matrix(c(1,1,2,2), nrow = 1)
+grid.arrange(prep_ing_graph,loli_graph_prep, layout_matrix =layout )
+```
+The above graphs indicate that the is in fact preparation techniques identified in the network are in fact not related to the type of ingredient used in that cocktail. The cocktails in the graph on the left are from a community where ingredients are shared. This community have been taken and is now represented by the preparation techniques that are used and this makes up the graph on the left. The chi-squared correlation shows the p-value for each cocktail. it can be seen that they are mostly above 0.05 and therefore are independent of each other. in conclusion the preparation technique is not dependent on the ingredients used. 
+
 
 ### Most popular words used for naming a cocktail
 
@@ -936,7 +1010,7 @@ pop_ing_bipart_proj <- bipartite_projection(pop_ing_bp_graph,multiplicity = T,wh
 ```{r}
 # Ingredients that are most often used together based off of the cocktails they are related to. The communities of clusters represent the cocktails that are similar based off of the ingredients they use.
 create_layout(graph=pop_ing_bipart_proj, layout = "fr")%>%
-  ggraph(ys) +
+  ggraph() +
   geom_edge_fan(aes(alpha = weight)) +
   geom_node_point(aes(size = deg, colour = as.factor(louvain) ) ) +
   geom_node_text(aes(label = ifelse(deg<=6, "",as.character(name) )),size = 3, colour = 'black', vjust = 0.4) +
